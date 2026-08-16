@@ -2,11 +2,20 @@ import io
 import numpy as np
 import pandas as pd
 import requests
+import streamlit as st
 import yfinance as yf
 
+# Configure page settings
+st.set_page_config(
+    page_title="S&P 500 Sector Breadth Dashboard",
+    page_icon="📈",
+    layout="wide",
+)
 
+
+@st.cache_data(ttl=3600)
 def get_sp500_sectors():
-    """Fetch current S&P 500 constituents and their GICS sectors with a browser header."""
+    """Fetch current S&P 500 constituents and their GICS sectors using a custom User-Agent."""
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {
         "User-Agent": (
@@ -18,145 +27,298 @@ def get_sp500_sectors():
     response = requests.get(url, headers=headers)
     response.raise_for_status()
 
-    # Wrap raw HTML in StringIO to avoid future parser deprecation warnings
     table = pd.read_html(io.StringIO(response.text))[0]
     table["Symbol"] = table["Symbol"].str.replace(".", "-", regex=False)
     return table[["Symbol", "GICS Sector", "Security"]]
 
 
-def calculate_stock_indicators(df):
-    """Calculate moving averages, highs/lows, returns, and RSI."""
+@st.cache_data(ttl=3600)
+def fetch_market_data(tickers):
+    """Download 1 year of daily historical data for all constituents in bulk."""
+    data = yf.download(
+        tickers,
+        period="1y",
+        group_by="ticker",
+        auto_adjust=True,
+        progress=False,
+    )
+    return data
+
+
+def calculate_stock_indicators(df, tickers):
+    """Calculate moving averages, high/low breakouts, RSI, and RVOL for each ticker."""
     results = {}
 
-    for ticker in df.columns.levels[1]:
-        sub = df.xs(ticker, axis=1, level=1).dropna()
-        if len(sub) < 252:
+    for ticker in tickers:
+        try:
+            # Handle multi-index formats safely across yfinance versions
+            if isinstance(df.columns, pd.MultiIndex):
+                if ticker in df.columns.levels[0]:
+                    sub = df[ticker].dropna()
+                elif ticker in df.columns.levels[1]:
+                    sub = df.xs(ticker, axis=1, level=1).dropna()
+                else:
+                    continue
+            else:
+                sub = df.dropna()
+
+            if len(sub) < 50:
+                continue
+
+            close = sub["Close"]
+            high = sub["High"] if "High" in sub.columns else close
+            low = sub["Low"] if "Low" in sub.columns else close
+            volume = (
+                sub["Volume"]
+                if "Volume" in sub.columns
+                else pd.Series(1, index=close.index)
+            )
+
+            last_price = float(close.iloc[-1])
+
+            # Moving Averages
+            sma10 = (
+                float(close.rolling(10).mean().iloc[-1])
+                if len(close) >= 10
+                else last_price
+            )
+            sma20 = (
+                float(close.rolling(20).mean().iloc[-1])
+                if len(close) >= 20
+                else last_price
+            )
+            sma50 = (
+                float(close.rolling(50).mean().iloc[-1])
+                if len(close) >= 50
+                else last_price
+            )
+            sma100 = (
+                float(close.rolling(100).mean().iloc[-1])
+                if len(close) >= 100
+                else last_price
+            )
+            sma200 = (
+                float(close.rolling(200).mean().iloc[-1])
+                if len(close) >= 200
+                else last_price
+            )
+
+            # Highs / Lows (4-week ~ 20 trading days, 52-week ~ 252 trading days)
+            # Compares today's intraday high/low against the highest/lowest of the prior lookback window
+            lookback_4w = min(len(high), 21)
+            lookback_52w = min(len(high), 253)
+
+            prior_hi_20 = float(high.iloc[-lookback_4w:-1].max())
+            prior_lo_20 = float(low.iloc[-lookback_4w:-1].min())
+            prior_hi_252 = float(high.iloc[-lookback_52w:-1].max())
+            prior_lo_252 = float(low.iloc[-lookback_52w:-1].min())
+
+            today_high = float(high.iloc[-1])
+            today_low = float(low.iloc[-1])
+
+            new_4w_high = today_high >= prior_hi_20
+            new_4w_low = today_low <= prior_lo_20
+            new_52w_high = today_high >= prior_hi_252
+            new_52w_low = today_low <= prior_lo_252
+
+            # 14-period RSI
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_gain = gain.rolling(14).mean().iloc[-1]
+            avg_loss = loss.rolling(14).mean().iloc[-1]
+            rs = avg_gain / avg_loss if avg_loss != 0 else np.nan
+            rsi = float(100 - (100 / (1 + rs))) if pd.notnull(rs) else 50.0
+
+            # Returns & Relative Volume (RVOL)
+            ret_1d = (
+                float((close.iloc[-1] / close.iloc[-2] - 1) * 100)
+                if len(close) >= 2
+                else 0.0
+            )
+            ret_5d = (
+                float((close.iloc[-1] / close.iloc[-6] - 1) * 100)
+                if len(close) >= 6
+                else 0.0
+            )
+
+            avg_vol20 = (
+                float(volume.rolling(20).mean().iloc[-1])
+                if len(volume) >= 20
+                else float(volume.iloc[-1])
+            )
+            rvol = (
+                float(volume.iloc[-1] / avg_vol20) if avg_vol20 > 0 else 1.0
+            )
+
+            results[ticker] = {
+                "last_price": last_price,
+                "above_10d": last_price > sma10,
+                "above_20d": last_price > sma20,
+                "above_50d": last_price > sma50,
+                "above_100d": last_price > sma100,
+                "above_200d": last_price > sma200,
+                "new_4w_high": new_4w_high,
+                "new_4w_low": new_4w_low,
+                "new_52w_high": new_52w_high,
+                "new_52w_low": new_52w_low,
+                "rsi": rsi,
+                "ret_1d": ret_1d,
+                "ret_5d": ret_5d,
+                "rvol": rvol,
+            }
+        except Exception:
             continue
-
-        close = sub["Close"]
-        high = sub["High"]
-        low = sub["Low"]
-        volume = sub["Volume"]
-        last_price = close.iloc[-1]
-
-        # Moving Averages
-        sma10 = close.rolling(10).mean().iloc[-1]
-        sma20 = close.rolling(20).mean().iloc[-1]
-        sma50 = close.rolling(50).mean().iloc[-1]
-        sma100 = close.rolling(100).mean().iloc[-1]
-        sma200 = close.rolling(200).mean().iloc[-1]
-
-        # Highs / Lows (4-week ~ 20 days, 52-week ~ 252 days)
-        hi_20 = high.iloc[-20:].max()
-        lo_20 = low.iloc[-20:].min()
-        hi_252 = high.iloc[-252:].max()
-        lo_252 = low.iloc[-252:].min()
-
-        # 14-period RSI
-        delta = close.diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.rolling(14).mean().iloc[-1]
-        avg_loss = loss.rolling(14).mean().iloc[-1]
-        rs = avg_gain / avg_loss if avg_loss != 0 else np.nan
-        rsi = 100 - (100 / (1 + rs)) if pd.notnull(rs) else 50.0
-
-        # Performance & RVOL
-        ret_1d = (close.iloc[-1] / close.iloc[-2] - 1) * 100
-        ret_5d = (
-            (close.iloc[-1] / close.iloc[-6] - 1) * 100
-            if len(close) > 6
-            else 0.0
-        )
-        avg_vol20 = volume.rolling(20).mean().iloc[-1]
-        rvol = volume.iloc[-1] / avg_vol20 if avg_vol20 > 0 else 1.0
-
-        results[ticker] = {
-            "last_price": last_price,
-            "above_10d": last_price > sma10,
-            "above_20d": last_price > sma20,
-            "above_50d": last_price > sma50,
-            "above_100d": last_price > sma100,
-            "above_200d": last_price > sma200,
-            "new_4w_high": last_price >= hi_20,
-            "new_4w_low": last_price <= lo_20,
-            "new_52w_high": last_price >= hi_252,
-            "new_52w_low": last_price <= lo_252,
-            "rsi": rsi,
-            "ret_1d": ret_1d,
-            "ret_5d": ret_5d,
-            "rvol": rvol,
-        }
 
     return pd.DataFrame.from_dict(results, orient="index")
 
 
-def generate_sector_breadth_report():
-    print("1. Fetching S&P 500 sector mapping...")
+# --- UI Presentation ---
+
+st.title("📊 S&P 500 Sector Breadth & Performance Dashboard")
+st.caption(
+    "Daily market participation, momentum extremes, and sector leaders."
+)
+
+with st.spinner("Fetching latest market data across S&P 500 constituents..."):
     sp_table = get_sp500_sectors()
     tickers = sp_table["Symbol"].tolist()
+    data = fetch_market_data(tickers)
+    metrics_df = calculate_stock_indicators(data, tickers)
 
-    print(f"2. Downloading historical data for {len(tickers)} symbols...")
-    data = yf.download(
-        tickers, period="1y", group_by="ticker", threads=True, progress=False
-    )
-
-    print("3. Computing breadth indicators...")
-    metrics_df = calculate_stock_indicators(data)
+    # Merge individual stock metrics with GICS sector mapping
     merged = sp_table.merge(
         metrics_df, left_on="Symbol", right_index=True, how="inner"
     )
 
-    # Sector Breadth Table
-    breadth = (
-        merged.groupby("GICS Sector")
-        .agg(
-            Total_Count=("Symbol", "count"),
-            Pct_Above_10D=("above_10d", lambda x: f"{x.mean() * 100:.1f}%"),
-            Pct_Above_20D=("above_20d", lambda x: f"{x.mean() * 100:.1f}%"),
-            Pct_Above_50D=("above_50d", lambda x: f"{x.mean() * 100:.1f}%"),
-            Pct_Above_100D=("above_100d", lambda x: f"{x.mean() * 100:.1f}%"),
-            Pct_Above_200D=("above_200d", lambda x: f"{x.mean() * 100:.1f}%"),
-            High_4W=("new_4w_high", lambda x: f"{x.mean() * 100:.1f}%"),
-            High_52W=("new_52w_high", lambda x: f"{x.mean() * 100:.1f}%"),
-            Low_4W=("new_4w_low", lambda x: f"{x.mean() * 100:.1f}%"),
-            Low_52W=("new_52w_low", lambda x: f"{x.mean() * 100:.1f}%"),
-            RSI_Over_70=("rsi", lambda x: f"{(x > 70).mean() * 100:.1f}%"),
-            RSI_Under_30=("rsi", lambda x: f"{(x < 30).mean() * 100:.1f}%"),
-        )
-        .reset_index()
+# Compute Sector-Level Breadth Aggregations
+breadth = (
+    merged.groupby("GICS Sector")
+    .agg(
+        Count=("Symbol", "count"),
+        Above_10D=("above_10d", lambda x: round(x.mean() * 100, 1)),
+        Above_20D=("above_20d", lambda x: round(x.mean() * 100, 1)),
+        Above_50D=("above_50d", lambda x: round(x.mean() * 100, 1)),
+        Above_100D=("above_100d", lambda x: round(x.mean() * 100, 1)),
+        Above_200D=("above_200d", lambda x: round(x.mean() * 100, 1)),
+        High_4W=("new_4w_high", lambda x: round(x.mean() * 100, 1)),
+        High_52W=("new_52w_high", lambda x: round(x.mean() * 100, 1)),
+        Low_4W=("new_4w_low", lambda x: round(x.mean() * 100, 1)),
+        Low_52W=("new_52w_low", lambda x: round(x.mean() * 100, 1)),
+        RSI_Over_70=("rsi", lambda x: round((x > 70).mean() * 100, 1)),
+        RSI_Under_30=("rsi", lambda x: round((x < 30).mean() * 100, 1)),
+    )
+    .reset_index()
+)
+
+# Sort sectors by 20-Day Moving Average participation (Rank 1 to 11)
+breadth = breadth.sort_values(by="Above_20D", ascending=False).reset_index(
+    drop=True
+)
+breadth.index += 1
+breadth.index.name = "Rank"
+
+st.subheader("Sector Breadth Dashboard")
+st.dataframe(
+    breadth.style.background_gradient(
+        subset=[
+            "Above_10D",
+            "Above_20D",
+            "Above_50D",
+            "Above_100D",
+            "Above_200D",
+        ],
+        cmap="Blues",
+        vmin=0,
+        vmax=100,
+    )
+    .background_gradient(
+        subset=["High_4W", "High_52W", "RSI_Over_70"],
+        cmap="Greens",
+        vmin=0,
+        vmax=30,
+    )
+    .background_gradient(
+        subset=["Low_4W", "Low_52W", "RSI_Under_30"],
+        cmap="Reds",
+        vmin=0,
+        vmax=30,
+    )
+    .format(
+        {
+            col: "{:.1f}%"
+            for col in breadth.columns
+            if col not in ["GICS Sector", "Count"]
+        }
+    ),
+    use_container_width=True,
+    height=450,
+)
+
+st.divider()
+
+# Sector Drill-Down Section
+st.subheader("Top Sector Performers & Volume Leaders")
+selected_sector = st.selectbox(
+    "Select Sector to Inspect:", sorted(merged["GICS Sector"].unique())
+)
+
+sector_stocks = merged[merged["GICS Sector"] == selected_sector]
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("##### 🚀 Top 5 Performers (5-Day Return)")
+    top_5d = sector_stocks.sort_values(by="ret_5d", ascending=False).head(5)[
+        ["Symbol", "Security", "last_price", "ret_1d", "ret_5d", "rvol", "rsi"]
+    ]
+    top_5d.columns = [
+        "Ticker",
+        "Company",
+        "Price ($)",
+        "1D %",
+        "5D %",
+        "RVOL",
+        "RSI",
+    ]
+    st.dataframe(
+        top_5d.style.format(
+            {
+                "Price ($)": "${:.2f}",
+                "1D %": "{:+.2f}%",
+                "5D %": "{:+.2f}%",
+                "RVOL": "{:.2f}x",
+                "RSI": "{:.1f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
 
-    print("\n" + "=" * 80)
-    print("SECTOR BREADTH DASHBOARD")
-    print("=" * 80)
-    print(breadth.to_string(index=False))
-
-    # Top Performers per Sector
-    print("\n" + "=" * 80)
-    print("TOP PERFORMERS BY SECTOR (5-Day Return)")
-    print("=" * 80)
-    top_performers = merged.sort_values(
-        ["GICS Sector", "ret_5d"], ascending=[True, False]
+with col2:
+    st.markdown("##### 📊 Top 5 Relative Volume Leaders (RVOL)")
+    top_rvol = sector_stocks.sort_values(by="rvol", ascending=False).head(5)[
+        ["Symbol", "Security", "last_price", "ret_1d", "ret_5d", "rvol", "rsi"]
+    ]
+    top_rvol.columns = [
+        "Ticker",
+        "Company",
+        "Price ($)",
+        "1D %",
+        "5D %",
+        "RVOL",
+        "RSI",
+    ]
+    st.dataframe(
+        top_rvol.style.format(
+            {
+                "Price ($)": "${:.2f}",
+                "1D %": "{:+.2f}%",
+                "5D %": "{:+.2f}%",
+                "RVOL": "{:.2f}x",
+                "RSI": "{:.1f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
-    for sector, group in top_performers.groupby("GICS Sector"):
-        print(f"\n[{sector}]")
-        top3 = group.head(3)[
-            ["Symbol", "Security", "ret_1d", "ret_5d", "rvol", "rsi"]
-        ]
-        top3.columns = ["Ticker", "Company", "1D %", "5D %", "RVOL", "RSI"]
-        print(
-            top3.to_string(
-                index=False,
-                formatters={
-                    "1D %": "{:+.2f}%".format,
-                    "5D %": "{:+.2f}%".format,
-                    "RVOL": "{:.2f}x".format,
-                    "RSI": "{:.1f}".format,
-                },
-            )
-        )
-
-
-if __name__ == "__main__":
-    generate_sector_breadth_report()
