@@ -15,7 +15,7 @@ st.set_page_config(
 
 @st.cache_data(ttl=3600)
 def get_sp500_sectors():
-    """Fetch current S&P 500 constituents and their GICS sectors using a custom User-Agent."""
+    """Fetch current S&P 500 constituents and their GICS sectors."""
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {
         "User-Agent": (
@@ -46,7 +46,7 @@ def fetch_market_data(tickers):
 
 
 def calculate_stock_indicators(df, tickers):
-    """Calculate moving averages, high/low breakouts, RSI, and RVOL for each ticker."""
+    """Calculate moving averages, high/low breakouts, RSI, and RVOL safely."""
     results = {}
 
     for ticker in tickers:
@@ -54,22 +54,25 @@ def calculate_stock_indicators(df, tickers):
             # Handle multi-index formats safely across yfinance versions
             if isinstance(df.columns, pd.MultiIndex):
                 if ticker in df.columns.levels[0]:
-                    sub = df[ticker].dropna()
+                    sub = df[ticker].dropna(how="all")
                 elif ticker in df.columns.levels[1]:
-                    sub = df.xs(ticker, axis=1, level=1).dropna()
+                    sub = df.xs(ticker, axis=1, level=1).dropna(how="all")
                 else:
                     continue
             else:
-                sub = df.dropna()
+                sub = df.dropna(how="all")
 
-            if len(sub) < 50:
+            if len(sub) < 30:
                 continue
 
-            close = sub["Close"]
-            high = sub["High"] if "High" in sub.columns else close
-            low = sub["Low"] if "Low" in sub.columns else close
+            close = sub["Close"].dropna()
+            if len(close) < 30:
+                continue
+
+            high = sub["High"].dropna() if "High" in sub.columns else close
+            low = sub["Low"].dropna() if "Low" in sub.columns else close
             volume = (
-                sub["Volume"]
+                sub["Volume"].dropna()
                 if "Volume" in sub.columns
                 else pd.Series(1, index=close.index)
             )
@@ -104,22 +107,37 @@ def calculate_stock_indicators(df, tickers):
             )
 
             # Highs / Lows (4-week ~ 20 trading days, 52-week ~ 252 trading days)
-            # Compares today's intraday high/low against the highest/lowest of the prior lookback window
             lookback_4w = min(len(high), 21)
             lookback_52w = min(len(high), 253)
 
-            prior_hi_20 = float(high.iloc[-lookback_4w:-1].max())
-            prior_lo_20 = float(low.iloc[-lookback_4w:-1].min())
-            prior_hi_252 = float(high.iloc[-lookback_52w:-1].max())
-            prior_lo_252 = float(low.iloc[-lookback_52w:-1].min())
+            prior_hi_20 = (
+                float(high.iloc[-lookback_4w:-1].max())
+                if lookback_4w > 1
+                else last_price
+            )
+            prior_lo_20 = (
+                float(low.iloc[-lookback_4w:-1].min())
+                if lookback_4w > 1
+                else last_price
+            )
+            prior_hi_252 = (
+                float(high.iloc[-lookback_52w:-1].max())
+                if lookback_52w > 1
+                else last_price
+            )
+            prior_lo_252 = (
+                float(low.iloc[-lookback_52w:-1].min())
+                if lookback_52w > 1
+                else last_price
+            )
 
             today_high = float(high.iloc[-1])
             today_low = float(low.iloc[-1])
 
-            new_4w_high = today_high >= prior_hi_20
-            new_4w_low = today_low <= prior_lo_20
-            new_52w_high = today_high >= prior_hi_252
-            new_52w_low = today_low <= prior_lo_252
+            new_4w_high = bool(today_high >= prior_hi_20)
+            new_4w_low = bool(today_low <= prior_lo_20)
+            new_52w_high = bool(today_high >= prior_hi_252)
+            new_52w_low = bool(today_low <= prior_lo_252)
 
             # 14-period RSI
             delta = close.diff()
@@ -128,7 +146,11 @@ def calculate_stock_indicators(df, tickers):
             avg_gain = gain.rolling(14).mean().iloc[-1]
             avg_loss = loss.rolling(14).mean().iloc[-1]
             rs = avg_gain / avg_loss if avg_loss != 0 else np.nan
-            rsi = float(100 - (100 / (1 + rs))) if pd.notnull(rs) else 50.0
+            rsi = (
+                float(100 - (100 / (1 + rs)))
+                if (pd.notnull(rs) and not np.isnan(rs))
+                else 50.0
+            )
 
             # Returns & Relative Volume (RVOL)
             ret_1d = (
@@ -148,7 +170,9 @@ def calculate_stock_indicators(df, tickers):
                 else float(volume.iloc[-1])
             )
             rvol = (
-                float(volume.iloc[-1] / avg_vol20) if avg_vol20 > 0 else 1.0
+                float(volume.iloc[-1] / avg_vol20)
+                if (avg_vol20 > 0 and not np.isnan(avg_vol20))
+                else 1.0
             )
 
             results[ticker] = {
@@ -196,17 +220,23 @@ breadth = (
     merged.groupby("GICS Sector")
     .agg(
         Count=("Symbol", "count"),
-        Above_10D=("above_10d", lambda x: round(x.mean() * 100, 1)),
-        Above_20D=("above_20d", lambda x: round(x.mean() * 100, 1)),
-        Above_50D=("above_50d", lambda x: round(x.mean() * 100, 1)),
-        Above_100D=("above_100d", lambda x: round(x.mean() * 100, 1)),
-        Above_200D=("above_200d", lambda x: round(x.mean() * 100, 1)),
-        High_4W=("new_4w_high", lambda x: round(x.mean() * 100, 1)),
-        High_52W=("new_52w_high", lambda x: round(x.mean() * 100, 1)),
-        Low_4W=("new_4w_low", lambda x: round(x.mean() * 100, 1)),
-        Low_52W=("new_52w_low", lambda x: round(x.mean() * 100, 1)),
-        RSI_Over_70=("rsi", lambda x: round((x > 70).mean() * 100, 1)),
-        RSI_Under_30=("rsi", lambda x: round((x < 30).mean() * 100, 1)),
+        Above_10D=("above_10d", lambda x: round(float(x.mean() * 100), 1)),
+        Above_20D=("above_20d", lambda x: round(float(x.mean() * 100), 1)),
+        Above_50D=("above_50d", lambda x: round(float(x.mean() * 100), 1)),
+        Above_100D=("above_100d", lambda x: round(float(x.mean() * 100), 1)),
+        Above_200D=("above_200d", lambda x: round(float(x.mean() * 100), 1)),
+        High_4W=("new_4w_high", lambda x: round(float(x.mean() * 100), 1)),
+        High_52W=("new_52w_high", lambda x: round(float(x.mean() * 100), 1)),
+        Low_4W=("new_4w_low", lambda x: round(float(x.mean() * 100), 1)),
+        Low_52W=("new_52w_low", lambda x: round(float(x.mean() * 100), 1)),
+        RSI_Under_30=(
+            "rsi",
+            lambda x: round(float((x < 30).mean() * 100), 1),
+        ),
+        RSI_Over_70=(
+            "rsi",
+            lambda x: round(float((x > 70).mean() * 100), 1),
+        ),
     )
     .reset_index()
 )
@@ -215,44 +245,71 @@ breadth = (
 breadth = breadth.sort_values(by="Above_20D", ascending=False).reset_index(
     drop=True
 )
-breadth.index += 1
-breadth.index.name = "Rank"
+breadth.insert(0, "Rank", range(1, len(breadth) + 1))
+
+# Rename columns to clean dashboard labels
+column_mapping = {
+    "GICS Sector": "Sector",
+    "Count": "Stocks",
+    "Above_10D": "> 10D SMA",
+    "Above_20D": "> 20D SMA",
+    "Above_50D": "> 50D SMA",
+    "Above_100D": "> 100D SMA",
+    "Above_200D": "> 200D SMA",
+    "High_4W": "4W High",
+    "High_52W": "52W High",
+    "Low_4W": "4W Low",
+    "Low_52W": "52W Low",
+    "RSI_Under_30": "RSI < 30",
+    "RSI_Over_70": "RSI > 70",
+}
+breadth = breadth.rename(columns=column_mapping)
+
+# Percentage columns for formatting
+pct_cols = [
+    "> 10D SMA",
+    "> 20D SMA",
+    "> 50D SMA",
+    "> 100D SMA",
+    "> 200D SMA",
+    "4W High",
+    "52W High",
+    "4W Low",
+    "52W Low",
+    "RSI < 30",
+    "RSI > 70",
+]
 
 st.subheader("Sector Breadth Dashboard")
 st.dataframe(
     breadth.style.background_gradient(
         subset=[
-            "Above_10D",
-            "Above_20D",
-            "Above_50D",
-            "Above_100D",
-            "Above_200D",
+            "> 10D SMA",
+            "> 20D SMA",
+            "> 50D SMA",
+            "> 100D SMA",
+            "> 200D SMA",
         ],
         cmap="Blues",
-        vmin=0,
-        vmax=100,
+        vmin=0.0,
+        vmax=100.0,
     )
     .background_gradient(
-        subset=["High_4W", "High_52W", "RSI_Over_70"],
-        cmap="Greens",
-        vmin=0,
-        vmax=30,
+        subset=["4W High", "52W High", "RSI > 70"],
+        cmap="BuGn",
+        vmin=0.0,
+        vmax=30.0,
     )
     .background_gradient(
-        subset=["Low_4W", "Low_52W", "RSI_Under_30"],
+        subset=["4W Low", "52W Low", "RSI < 30"],
         cmap="Reds",
-        vmin=0,
-        vmax=30,
+        vmin=0.0,
+        vmax=30.0,
     )
-    .format(
-        {
-            col: "{:.1f}%"
-            for col in breadth.columns
-            if col not in ["GICS Sector", "Count"]
-        }
-    ),
+    .format({col: "{:.1f}%" for col in pct_cols}),
     use_container_width=True,
     height=450,
+    hide_index=True,
 )
 
 st.divider()
