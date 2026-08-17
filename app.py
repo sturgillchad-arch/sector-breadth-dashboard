@@ -443,6 +443,19 @@ with tab1:
         "Constituent participation, 1-week breadth momentum shifts, and momentum extremes."
     )
 
+    with st.expander("📖 Breadth & Momentum Column Guide"):
+        st.markdown(
+            """
+        * **`> 10D / 20D SMA`**: Short-term tactical participation. High values ($>80\%$) signal strong thrust; low values ($<20\%$) indicate washed-out conditions.
+        * **`1W Breadth Shift`**: Net change in % of stocks above their 20D SMA over the last 5 trading days. Positive values reveal expanding internal momentum.
+        * **`> 50D SMA`**: Intermediate institutional trend health. Benchmark for intermediate bull/bear posture.
+        * **`> 200D SMA`**: Structural long-term bull market filter.
+        * **`4W / 52W High`**: % of sector stocks making new 20-day (4-week) or 252-day (52-week) highs today. Signals breakout strength.
+        * **`4W / 52W Low`**: % of sector stocks making new 20-day or 52-week lows today. Signals active institutional selling.
+        * **`RSI < 30 / > 70`**: % of sector constituents severely oversold or overbought on the 14-period Relative Strength Index.
+        """
+        )
+
     breadth = (
         merged_df.groupby("GICS Sector")
         .agg(
@@ -481,11 +494,9 @@ with tab1:
         .reset_index()
     )
 
-    # Calculate 1-Week Breadth Shift (% change in stocks > 20D SMA)
     breadth["Breadth_1W_Shift"] = round(
         breadth["Above_20D"] - breadth["Above_20D_5D"], 1
     )
-
     breadth = breadth.sort_values(by="Above_20D", ascending=False).reset_index(
         drop=True
     )
@@ -510,7 +521,67 @@ with tab1:
         columns=column_mapping
     )
 
-    # Build a single unified formatting dictionary
+    # Column configuration tooltips for hover info
+    breadth_col_config = {
+        "Rank": st.column_config.NumberColumn(
+            "Rank", help="Sector rank ordered by 20D SMA participation."
+        ),
+        "Sector": st.column_config.TextColumn(
+            "Sector", help="GICS Sector classification."
+        ),
+        "Stocks": st.column_config.NumberColumn(
+            "Stocks", help="Number of S&P 500 constituents in this sector."
+        ),
+        "> 10D SMA": st.column_config.TextColumn(
+            "> 10D SMA",
+            help="% of sector constituents trading above their 10-day moving average.",
+        ),
+        "> 20D SMA": st.column_config.TextColumn(
+            "> 20D SMA",
+            help="% of sector constituents trading above their 20-day moving average.",
+        ),
+        "1W Breadth Shift": st.column_config.TextColumn(
+            "1W Breadth Shift",
+            help="5-day net percentage point change in stocks above 20D SMA. Positive = expanding breadth.",
+        ),
+        "> 50D SMA": st.column_config.TextColumn(
+            "> 50D SMA",
+            help="% of sector constituents trading above their 50-day moving average (Intermediate Trend).",
+        ),
+        "> 100D SMA": st.column_config.TextColumn(
+            "> 100D SMA",
+            help="% of sector constituents trading above their 100-day moving average.",
+        ),
+        "> 200D SMA": st.column_config.TextColumn(
+            "> 200D SMA",
+            help="% of sector constituents trading above their 200-day moving average (Long-term Bull Trend).",
+        ),
+        "4W High": st.column_config.TextColumn(
+            "4W High",
+            help="% of sector constituents making new 20-day (4-week) intraday highs today.",
+        ),
+        "52W High": st.column_config.TextColumn(
+            "52W High",
+            help="% of sector constituents making new 52-week (252-day) intraday highs today.",
+        ),
+        "4W Low": st.column_config.TextColumn(
+            "4W Low",
+            help="% of sector constituents making new 20-day (4-week) intraday lows today.",
+        ),
+        "52W Low": st.column_config.TextColumn(
+            "52W Low",
+            help="% of sector constituents making new 52-week (252-day) intraday lows today.",
+        ),
+        "RSI < 30": st.column_config.TextColumn(
+            "RSI < 30",
+            help="% of sector constituents with 14-day RSI below 30 (Oversold / Washout).",
+        ),
+        "RSI > 70": st.column_config.TextColumn(
+            "RSI > 70",
+            help="% of sector constituents with 14-day RSI above 70 (Overbought / Extended Momentum).",
+        ),
+    }
+
     format_dict = {
         "> 10D SMA": "{:.1f}%",
         "> 20D SMA": "{:.1f}%",
@@ -555,6 +626,7 @@ with tab1:
             vmax=30.0,
         )
         .format(format_dict),
+        column_config=breadth_col_config,
         use_container_width=True,
         height=450,
         hide_index=True,
@@ -570,6 +642,18 @@ with tab2:
         "Tracks institutional capital flow over 1-Week, 1-Month, and 3-Month horizons."
     )
 
+    with st.expander("📖 Relative Strength & Rotation Guide"):
+        st.markdown(
+            """
+        * **`Alpha 1M / 3M`**: Excess return generated by the sector ETF compared directly against `SPY` over the last 22 / 63 trading days.
+        * **`RS Momentum`**: Percentage divergence of the current ETF/SPY ratio above its 10-day moving average.
+        * **`🟢 Leading`**: Outperforming SPY with expanding relative momentum. Institutional overweight.
+        * **`🟡 Weakening`**: Strong past return but short-term relative momentum is rolling over.
+        * **`🔵 Improving`**: Underperformed recently, but short-term relative momentum is accelerating upward.
+        * **`🔴 Lagging`**: Underperforming SPY with negative relative momentum. Institutional underweight.
+        """
+        )
+
     c1, c2 = st.columns([1.2, 1])
 
     with c1:
@@ -577,6 +661,40 @@ with tab2:
         styled_sector_df = sector_perf_df.sort_values(
             by="Alpha 1M", ascending=False
         )
+
+        sector_col_config = {
+            "Sector": st.column_config.TextColumn(
+                "Sector", help="GICS Sector name."
+            ),
+            "ETF": st.column_config.TextColumn(
+                "ETF", help="Benchmark Sector SPDR ETF ticker."
+            ),
+            "Price": st.column_config.NumberColumn(
+                "Price", help="Latest closing price."
+            ),
+            "1W %": st.column_config.NumberColumn(
+                "1W %", help="1-week total return."
+            ),
+            "1M %": st.column_config.NumberColumn(
+                "1M %", help="1-month (22 trading days) total return."
+            ),
+            "3M %": st.column_config.NumberColumn(
+                "3M %", help="3-month (63 trading days) total return."
+            ),
+            "Alpha 1M": st.column_config.NumberColumn(
+                "Alpha 1M", help="1-Month excess return over SPY."
+            ),
+            "Alpha 3M": st.column_config.NumberColumn(
+                "Alpha 3M", help="3-Month excess return over SPY."
+            ),
+            "RS Momentum": st.column_config.NumberColumn(
+                "RS Momentum", help="Ratio momentum vs 10D SMA."
+            ),
+            "Rotation Phase": st.column_config.TextColumn(
+                "Rotation Phase", help="Leading / Weakening / Improving / Lagging."
+            ),
+        }
+
         st.dataframe(
             styled_sector_df.style.background_gradient(
                 subset=["Alpha 1M", "Alpha 3M", "RS Momentum"],
@@ -594,6 +712,7 @@ with tab2:
                     "RS Momentum": "{:+.2f}%",
                 }
             ),
+            column_config=sector_col_config,
             use_container_width=True,
             hide_index=True,
             height=430,
@@ -636,6 +755,19 @@ with tab3:
     st.caption(
         "Screen high-momentum institutional leaders trading in uptrends with active volume expansion."
     )
+
+    with st.expander("📖 Alpha Radar Metric & Setup Guide"):
+        st.markdown(
+            """
+        * **`Setup Types`**:
+            * **🔥 Volume Breakout**: Making 4-week new highs with Relative Volume (RVOL) $> 1.3\text{x}$.
+            * **🎯 20D SMA Pullback**: Trading within $2.5\%$ of the 20D SMA with RSI $< 60$ (low-risk entry).
+            * **💎 Stage 2 Leader**: Trend Score $= 5/5$ and 3-Month Alpha $> +10\%$ vs SPY.
+            * **⚡ Momentum Stretch**: Extended momentum with RSI $> 70$.
+        * **`Trend Score (0-5)`**: Evaluates price $> 20\text{D}, 50\text{D}, 200\text{D}$ SMAs and bullish SMA stacking ($20 > 50 > 200$).
+        * **`RVOL (Relative Volume)`**: Ratio of today's volume to the 20-day average. Values $> 1.0\text{x}$ confirm institutional interest.
+        """
+        )
 
     f1, f2, f3, f4 = st.columns(4)
     with f1:
@@ -714,6 +846,46 @@ with tab3:
             "Trend Score (0-5)",
         ]
 
+        radar_col_config = {
+            "Ticker": st.column_config.TextColumn(
+                "Ticker", help="Stock symbol."
+            ),
+            "Company": st.column_config.TextColumn(
+                "Company", help="Company security name."
+            ),
+            "Sector": st.column_config.TextColumn(
+                "Sector", help="GICS Sector classification."
+            ),
+            "Setup Type": st.column_config.TextColumn(
+                "Setup Type", help="Algorithmic technical pattern classification."
+            ),
+            "Price ($)": st.column_config.NumberColumn(
+                "Price ($)", help="Latest closing price."
+            ),
+            "1D %": st.column_config.NumberColumn(
+                "1D %", help="1-day return percentage."
+            ),
+            "5D %": st.column_config.NumberColumn(
+                "5D %", help="5-day return percentage."
+            ),
+            "1M Alpha": st.column_config.NumberColumn(
+                "1M Alpha", help="1-Month excess return over SPY."
+            ),
+            "3M Alpha": st.column_config.NumberColumn(
+                "3M Alpha", help="3-Month excess return over SPY."
+            ),
+            "RVOL": st.column_config.NumberColumn(
+                "RVOL", help="Current volume relative to 20-day average."
+            ),
+            "RSI": st.column_config.NumberColumn(
+                "RSI", help="14-day Relative Strength Index."
+            ),
+            "Trend Score (0-5)": st.column_config.NumberColumn(
+                "Trend Score (0-5)",
+                help="Sum of moving average bull filters (Price > 20/50/200, 20>50>200).",
+            ),
+        }
+
         st.markdown(f"**Found {len(out_df)} Outperforming Leaders:**")
         st.dataframe(
             out_df.style.background_gradient(
@@ -731,6 +903,7 @@ with tab3:
                     "RSI": "{:.1f}",
                 }
             ),
+            column_config=radar_col_config,
             use_container_width=True,
             hide_index=True,
             height=480,
@@ -806,6 +979,37 @@ with tab4:
                 "RSI",
                 "Dist > 50D (%)",
             ]
+
+            leaps_col_config = {
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", help="Stock symbol."
+                ),
+                "Company": st.column_config.TextColumn(
+                    "Company", help="Company security name."
+                ),
+                "Sector": st.column_config.TextColumn(
+                    "Sector", help="GICS Sector classification."
+                ),
+                "Price ($)": st.column_config.NumberColumn(
+                    "Price ($)", help="Latest closing price."
+                ),
+                "3M Alpha": st.column_config.NumberColumn(
+                    "3M Alpha", help="3-Month excess return over SPY."
+                ),
+                "30D HV (%)": st.column_config.NumberColumn(
+                    "30D HV (%)",
+                    help="30-day annualized historical volatility. Lower values (<35%) make LEAPS cheaper.",
+                ),
+                "RSI": st.column_config.NumberColumn(
+                    "RSI",
+                    help="14-day RSI (ideal 45-68 for trend continuation without overbought risk).",
+                ),
+                "Dist > 50D (%)": st.column_config.NumberColumn(
+                    "Dist > 50D (%)",
+                    help="Distance above the 50-day SMA support level.",
+                ),
+            }
+
             st.dataframe(
                 disp_leaps.style.background_gradient(
                     subset=["3M Alpha"], cmap="Greens", vmin=5, vmax=30
@@ -822,6 +1026,7 @@ with tab4:
                         "Dist > 50D (%)": "{:+.1f}%",
                     }
                 ),
+                column_config=leaps_col_config,
                 use_container_width=True,
                 hide_index=True,
             )
@@ -867,6 +1072,39 @@ with tab4:
                 "RSI",
                 "5D %",
             ]
+
+            csp_col_config = {
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", help="Stock symbol."
+                ),
+                "Company": st.column_config.TextColumn(
+                    "Company", help="Company security name."
+                ),
+                "Sector": st.column_config.TextColumn(
+                    "Sector", help="GICS Sector classification."
+                ),
+                "Price ($)": st.column_config.NumberColumn(
+                    "Price ($)", help="Latest closing price."
+                ),
+                "50D SMA ($)": st.column_config.NumberColumn(
+                    "50D SMA ($)", help="50-day moving average strike anchor."
+                ),
+                "Dist to 50D (%)": st.column_config.NumberColumn(
+                    "Dist to 50D (%)",
+                    help="Proximity to the 50D SMA (pullback entry window).",
+                ),
+                "30D HV (%)": st.column_config.NumberColumn(
+                    "30D HV (%)",
+                    help="Elevated historical volatility increases option premium collected.",
+                ),
+                "RSI": st.column_config.NumberColumn(
+                    "RSI", help="RSI in pullback zone (35-55)."
+                ),
+                "5D %": st.column_config.NumberColumn(
+                    "5D %", help="5-day return."
+                ),
+            }
+
             st.dataframe(
                 disp_csp.style.background_gradient(
                     subset=["30D HV (%)"], cmap="Oranges", vmin=20, vmax=50
@@ -884,6 +1122,7 @@ with tab4:
                         "5D %": "{:+.2f}%",
                     }
                 ),
+                column_config=csp_col_config,
                 use_container_width=True,
                 hide_index=True,
             )
@@ -929,6 +1168,37 @@ with tab4:
                 "52W High?",
                 "30D HV (%)",
             ]
+
+            cc_col_config = {
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", help="Stock symbol."
+                ),
+                "Company": st.column_config.TextColumn(
+                    "Company", help="Company security name."
+                ),
+                "Sector": st.column_config.TextColumn(
+                    "Sector", help="GICS Sector classification."
+                ),
+                "Price ($)": st.column_config.NumberColumn(
+                    "Price ($)", help="Latest closing price."
+                ),
+                "5D %": st.column_config.NumberColumn(
+                    "5D %", help="5-day return."
+                ),
+                "1M %": st.column_config.NumberColumn(
+                    "1M %", help="1-month return."
+                ),
+                "RSI": st.column_config.NumberColumn(
+                    "RSI", help="14-day RSI (>70 indicates overbought momentum)."
+                ),
+                "52W High?": st.column_config.CheckboxColumn(
+                    "52W High?", help="Whether stock made a new 52-week peak today."
+                ),
+                "30D HV (%)": st.column_config.NumberColumn(
+                    "30D HV (%)", help="Historical volatility."
+                ),
+            }
+
             st.dataframe(
                 disp_cc.style.background_gradient(
                     subset=["RSI"], cmap="Reds", vmin=70, vmax=90
@@ -941,6 +1211,7 @@ with tab4:
                         "30D HV (%)": "{:.1f}%",
                     }
                 ),
+                column_config=cc_col_config,
                 use_container_width=True,
                 hide_index=True,
             )
