@@ -324,9 +324,7 @@ def compute_sector_etf_performance(df, spy_close):
     return pd.DataFrame(sector_data)
 
 
-# ==============================================================================
 # --- DATA PIPELINE INGESTION ---
-# ==============================================================================
 
 with st.spinner("Downloading live institutional market feeds & calculating alpha..."):
     sp_table = get_sp500_constituents()
@@ -351,13 +349,10 @@ with st.spinner("Downloading live institutional market feeds & calculating alpha
         st.stop()
 
 
-# ==============================================================================
-# --- SIDEBAR: MACRO & PORTFOLIO ACTION CENTER ---
-# ==============================================================================
+# --- SIDEBAR ---
 
 st.sidebar.title("⚡ Portfolio Action Center")
 
-# S&P 500 & VIX Snapshot
 spy_last = spy_close.iloc[-1]
 spy_chg_1d = (spy_close.iloc[-1] / spy_close.iloc[-2] - 1) * 100
 st.sidebar.metric("S&P 500 (SPY)", f"${spy_last:.2f}", f"{spy_chg_1d:+.2f}%")
@@ -372,7 +367,6 @@ if vix_series:
 
 st.sidebar.divider()
 
-# Market Regime & Tactical Bias
 pct_stocks_above_50d = (merged_df["above_50d"].mean()) * 100
 pct_stocks_above_200d = (merged_df["above_200d"].mean()) * 100
 
@@ -388,14 +382,11 @@ else:
     advice = "Focus on relative strength leaders with strong RVOL; avoid broad index beta."
 
 st.sidebar.info(f"**Regime:** {regime}\n\n**Action:** {advice}")
-
 st.sidebar.markdown(f"* S&P 500 > 50D SMA: **{pct_stocks_above_50d:.1f}%**")
 st.sidebar.markdown(f"* S&P 500 > 200D SMA: **{pct_stocks_above_200d:.1f}%**")
 
 
-# ==============================================================================
-# --- MAIN WORKSPACE: 4 POWER TABS ---
-# ==============================================================================
+# --- MAIN WORKSPACE ---
 
 st.title("🏛️ Institutional S&P 500 Sector & Alpha Dashboard")
 st.caption(
@@ -411,9 +402,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
     ]
 )
 
-# ------------------------------------------------------------------------------
-# TAB 1: SECTOR BREADTH MATRIX (COMPOUND / BLOOMBERG)
-# ------------------------------------------------------------------------------
+# --- TAB 1: BREADTH MATRIX ---
 with tab1:
     st.subheader("S&P 500 Large Cap Breadth Matrix")
     st.caption(
@@ -519,10 +508,7 @@ with tab1:
         hide_index=True,
     )
 
-
-# ------------------------------------------------------------------------------
-# TAB 2: RELATIVE STRENGTH & SECTOR ROTATION MATRIX
-# ------------------------------------------------------------------------------
+# --- TAB 2: RELATIVE STRENGTH & ROTATION ---
 with tab2:
     st.subheader("Sector Relative Strength vs. S&P 500 (SPY)")
     st.caption(
@@ -586,17 +572,13 @@ with tab2:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-
-# ------------------------------------------------------------------------------
-# TAB 3: ALPHA OUTPERFORMER RADAR (THE STOCK SCANNER)
-# ------------------------------------------------------------------------------
+# --- TAB 3: ALPHA OUTPERFORMER RADAR ---
 with tab3:
     st.subheader("🎯 Alpha Radar: Top Stocks Outperforming the S&P 500")
     st.caption(
         "Screen high-momentum institutional leaders trading in uptrends with active volume expansion."
     )
 
-    # Screener Filters
     f1, f2, f3, f4 = st.columns(4)
     with f1:
         sector_filter = st.selectbox(
@@ -612,7 +594,6 @@ with tab3:
             "Uptrend Only (> 20D, 50D, 200D)", value=True
         )
 
-    # Filter Logic
     filtered = merged_df.copy()
     if sector_filter != "All Sectors":
         filtered = filtered[filtered["GICS Sector"] == sector_filter]
@@ -628,7 +609,6 @@ with tab3:
             & (filtered["above_200d"])
         ]
 
-    # Setup Classification
     def classify_setup(row):
         if row["new_4w_high"] and row["rvol"] >= 1.3:
             return "🔥 Volume Breakout"
@@ -701,7 +681,6 @@ with tab3:
             height=480,
         )
 
-        # CSV Download Button
         csv_data = out_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="📥 Export Outperforming Stocks to CSV",
@@ -710,12 +689,11 @@ with tab3:
             mime="text/csv",
         )
     else:
-        st.warning("No stocks match the selected filter criteria. Try lowering the alpha or RVOL threshold.")
+        st.warning(
+            "No stocks match the selected filter criteria. Try lowering the alpha or RVOL threshold."
+        )
 
-
-# ------------------------------------------------------------------------------
-# TAB 4: SINGLE STOCK & SECTOR DEEP DIVE
-# ------------------------------------------------------------------------------
+# --- TAB 4: DEEP DIVE ---
 with tab4:
     st.subheader("🔍 Deep Dive Technical Checklist")
     selected_ticker = st.selectbox(
@@ -729,8 +707,6 @@ with tab4:
 
     if stock_series:
         c_series = stock_series["close"]
-        h_series = stock_series["high"]
-        l_series = stock_series["low"]
 
         d1, d2, d3, d4, d5 = st.columns(5)
         d1.metric("Current Price", f"${stock_row['last_price']:.2f}")
@@ -739,7 +715,6 @@ with tab4:
         d4.metric("RVOL (20D)", f"{stock_row['rvol']:.2f}x")
         d5.metric("RSI(14)", f"{stock_row['rsi']:.1f}")
 
-        # Interactive Technical Chart
         chart_fig = go.Figure()
         chart_fig.add_trace(
             go.Scatter(
@@ -784,7 +759,6 @@ with tab4:
         )
         st.plotly_chart(chart_fig, use_container_width=True)
 
-        # Technical Checklist Card
         st.markdown("##### 📋 Technical Health Checklist")
         chk1 = "✅" if stock_row["above_20d"] else "❌"
         chk2 = "✅" if stock_row["above_50d"] else "❌"
@@ -794,7 +768,15 @@ with tab4:
 
         ch_col1, ch_col2 = st.columns(2)
         ch_col1.markdown(f"- {chk1} **Above 20D SMA:** Short-term trend support")
-        ch_col1.markdown(f"- {chk2} **Above 50D SMA:** Intermediate institutional trend")
-        ch_col1.markdown(f"- {chk3} **Above 200D SMA:** Long-term bull market filter")
-        ch_col2.markdown(f"- {chk4} **1-Month Alpha Positive:** Generating excess return vs SPY")
-        ch_col2.markdown(f"- {chk5} **RSI In Health Zone (40-70):** Not severely overbought or broken down")
+        ch_col1.markdown(
+            f"- {chk2} **Above 50D SMA:** Intermediate institutional trend"
+        )
+        ch_col1.markdown(
+            f"- {chk3} **Above 200D SMA:** Long-term bull market filter"
+        )
+        ch_col2.markdown(
+            f"- {chk4} **1-Month Alpha Positive:** Generating excess return vs SPY"
+        )
+        ch_col2.markdown(
+            f"- {chk5} **RSI In Health Zone (40-70):** Not severely overbought or broken down"
+        )
