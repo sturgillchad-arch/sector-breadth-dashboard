@@ -510,19 +510,21 @@ with tab1:
         columns=column_mapping
     )
 
-    pct_cols = [
-        "> 10D SMA",
-        "> 20D SMA",
-        "> 50D SMA",
-        "> 100D SMA",
-        "> 200D SMA",
-        "4W High",
-        "52W High",
-        "4W Low",
-        "52W Low",
-        "RSI < 30",
-        "RSI > 70",
-    ]
+    # Build a single unified formatting dictionary
+    format_dict = {
+        "> 10D SMA": "{:.1f}%",
+        "> 20D SMA": "{:.1f}%",
+        "> 50D SMA": "{:.1f}%",
+        "> 100D SMA": "{:.1f}%",
+        "> 200D SMA": "{:.1f}%",
+        "4W High": "{:.1f}%",
+        "52W High": "{:.1f}%",
+        "4W Low": "{:.1f}%",
+        "52W Low": "{:.1f}%",
+        "RSI < 30": "{:.1f}%",
+        "RSI > 70": "{:.1f}%",
+        "1W Breadth Shift": "{:+.1f}%",
+    }
 
     st.dataframe(
         breadth.style.background_gradient(
@@ -552,14 +554,7 @@ with tab1:
             vmin=0.0,
             vmax=30.0,
         )
-        .format(
-            {
-                col: "{:.1f}%"
-                for col in pct_cols
-                if col in breadth.columns
-            }
-        )
-        .format({"1W Breadth Shift": "{:+.1f}%"}),
+        .format(format_dict),
         use_container_width=True,
         height=450,
         hide_index=True,
@@ -755,7 +750,7 @@ with tab3:
 
 
 # ------------------------------------------------------------------------------
-# TAB 4: OPTIONS STRATEGY RADAR (NEW POWER SUITE)
+# TAB 4: OPTIONS STRATEGY RADAR
 # ------------------------------------------------------------------------------
 with tab4:
     st.subheader("💡 Options Strategy Scanner & Setup Generator")
