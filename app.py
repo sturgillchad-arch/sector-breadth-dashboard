@@ -9,7 +9,7 @@ import yfinance as yf
 
 # Configure page layout
 st.set_page_config(
-    page_title="Institutional Sector Breadth & Alpha Terminal",
+    page_title="Institutional Sector Breadth & Options Terminal",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -95,7 +95,7 @@ def extract_price_series(df, ticker):
 
 
 def calculate_stock_metrics(df, tickers, spy_close):
-    """Calculate breadth, momentum, high/low breakouts, and Relative Strength vs SPY."""
+    """Calculate breadth, momentum, breakouts, HV, and Relative Strength vs SPY."""
     results = {}
 
     spy_ret_1m = (
@@ -124,7 +124,7 @@ def calculate_stock_metrics(df, tickers, spy_close):
 
         last_price = float(close.iloc[-1])
 
-        # Moving Averages
+        # Moving Averages (Current & 5 Days Ago for Breadth Momentum)
         sma10 = (
             float(close.rolling(10).mean().iloc[-1])
             if len(close) >= 10
@@ -151,7 +151,14 @@ def calculate_stock_metrics(df, tickers, spy_close):
             else last_price
         )
 
-        # Highs / Lows
+        sma20_5d_ago = (
+            float(close.rolling(20).mean().iloc[-6])
+            if len(close) >= 26
+            else sma20
+        )
+        price_5d_ago = float(close.iloc[-6]) if len(close) >= 6 else last_price
+
+        # Highs / Lows Breakouts
         lookback_4w = min(len(high), 21)
         lookback_52w = min(len(high), 253)
 
@@ -184,7 +191,7 @@ def calculate_stock_metrics(df, tickers, spy_close):
         new_52w_high = bool(today_high >= prior_hi_252)
         new_52w_low = bool(today_low <= prior_lo_252)
 
-        # RSI(14)
+        # 14-period RSI
         delta = close.diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
@@ -197,7 +204,15 @@ def calculate_stock_metrics(df, tickers, spy_close):
             else 50.0
         )
 
-        # Performance Returns
+        # 30-Day Annualized Historical Volatility (HV30)
+        log_ret = np.log(close / close.shift(1))
+        hv30 = (
+            float(log_ret.iloc[-30:].std() * np.sqrt(252) * 100)
+            if len(log_ret) >= 30
+            else 20.0
+        )
+
+        # Returns
         ret_1d = (
             float((close.iloc[-1] / close.iloc[-2] - 1) * 100)
             if len(close) >= 2
@@ -219,11 +234,11 @@ def calculate_stock_metrics(df, tickers, spy_close):
             else 0.0
         )
 
-        # Alpha vs SPY (Excess Return)
+        # Alpha vs SPY
         alpha_1m = ret_1m - spy_ret_1m
         alpha_3m = ret_3m - spy_ret_3m
 
-        # RVOL (20-Day Average Volume Ratio)
+        # Relative Volume (RVOL)
         avg_vol20 = (
             float(volume.rolling(20).mean().iloc[-1])
             if len(volume) >= 20
@@ -235,7 +250,7 @@ def calculate_stock_metrics(df, tickers, spy_close):
             else 1.0
         )
 
-        # Trend Template Score
+        # Trend Structure Score (0 to 5)
         trend_score = sum(
             [
                 last_price > sma20,
@@ -246,10 +261,15 @@ def calculate_stock_metrics(df, tickers, spy_close):
             ]
         )
 
+        # Distance from Moving Averages (%)
+        dist_20d = ((last_price / sma20) - 1) * 100
+        dist_50d = ((last_price / sma50) - 1) * 100
+
         results[ticker] = {
             "last_price": last_price,
             "above_10d": last_price > sma10,
             "above_20d": last_price > sma20,
+            "above_20d_5d_ago": price_5d_ago > sma20_5d_ago,
             "above_50d": last_price > sma50,
             "above_100d": last_price > sma100,
             "above_200d": last_price > sma200,
@@ -258,6 +278,7 @@ def calculate_stock_metrics(df, tickers, spy_close):
             "new_52w_high": new_52w_high,
             "new_52w_low": new_52w_low,
             "rsi": rsi,
+            "hv30": hv30,
             "ret_1d": ret_1d,
             "ret_5d": ret_5d,
             "ret_1m": ret_1m,
@@ -266,6 +287,8 @@ def calculate_stock_metrics(df, tickers, spy_close):
             "alpha_3m": alpha_3m,
             "rvol": rvol,
             "trend_score": trend_score,
+            "dist_20d": dist_20d,
+            "dist_50d": dist_50d,
             "sma20": sma20,
             "sma50": sma50,
             "sma200": sma200,
@@ -324,9 +347,11 @@ def compute_sector_etf_performance(df, spy_close):
     return pd.DataFrame(sector_data)
 
 
+# ==============================================================================
 # --- DATA PIPELINE INGESTION ---
+# ==============================================================================
 
-with st.spinner("Downloading live institutional market feeds & calculating alpha..."):
+with st.spinner("Downloading live market data & computing alpha feeds..."):
     sp_table = get_sp500_constituents()
     all_tickers = sp_table["Symbol"].tolist()
     raw_data = fetch_all_market_data(all_tickers)
@@ -349,7 +374,9 @@ with st.spinner("Downloading live institutional market feeds & calculating alpha
         st.stop()
 
 
-# --- SIDEBAR ---
+# ==============================================================================
+# --- SIDEBAR: MACRO ACTION CENTER ---
+# ==============================================================================
 
 st.sidebar.title("⚡ Portfolio Action Center")
 
@@ -367,46 +394,53 @@ if vix_series:
 
 st.sidebar.divider()
 
+pct_stocks_above_20d = (merged_df["above_20d"].mean()) * 100
 pct_stocks_above_50d = (merged_df["above_50d"].mean()) * 100
 pct_stocks_above_200d = (merged_df["above_200d"].mean()) * 100
 
 st.sidebar.markdown("### 🧭 Market Breadth Regime")
 if pct_stocks_above_50d > 60 and pct_stocks_above_200d > 60:
     regime = "🟢 Bullish Expansion"
-    advice = "Favor aggressive trend continuation, LEAPS, & covered calls in Leading sectors."
+    advice = "Favor aggressive trend continuation, LEAPS, & PMCCs on Leading sectors."
 elif pct_stocks_above_50d < 40 and pct_stocks_above_200d < 50:
     regime = "🔴 Bearish Contraction"
-    advice = "Raise cash, trim lagging sectors, sell defensive cash-secured puts on dips."
+    advice = "Raise cash, trim lagging sectors, sell defensive cash-secured puts."
 else:
-    regime = "🟡 Neutral / Choppy Rotation"
-    advice = "Focus on relative strength leaders with strong RVOL; avoid broad index beta."
+    regime = "🟡 Neutral / Rotation"
+    advice = "Focus on high-RVOL leaders; favor defined-risk options & covered calls."
 
 st.sidebar.info(f"**Regime:** {regime}\n\n**Action:** {advice}")
+st.sidebar.markdown(f"* S&P 500 > 20D SMA: **{pct_stocks_above_20d:.1f}%**")
 st.sidebar.markdown(f"* S&P 500 > 50D SMA: **{pct_stocks_above_50d:.1f}%**")
 st.sidebar.markdown(f"* S&P 500 > 200D SMA: **{pct_stocks_above_200d:.1f}%**")
 
 
-# --- MAIN WORKSPACE ---
+# ==============================================================================
+# --- MAIN WORKSPACE: 5 POWER TABS ---
+# ==============================================================================
 
 st.title("🏛️ Institutional S&P 500 Sector & Alpha Dashboard")
 st.caption(
-    "Real-time money flow rotation, relative strength alpha vs. SPY, and stock breakout radar."
+    "Real-time money flow rotation, relative strength alpha vs. SPY, and option trade screeners."
 )
 
-tab1, tab2, tab3, tab4 = st.tabs(
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
     [
         "📊 Sector Breadth Matrix",
         "🔄 Relative Strength & Rotation",
         "🎯 Alpha Outperformer Radar",
-        "🔍 Single Stock & Sector Deep Dive",
+        "💡 Options Strategy Radar",
+        "🔍 Single Stock Deep Dive",
     ]
 )
 
-# --- TAB 1: BREADTH MATRIX ---
+# ------------------------------------------------------------------------------
+# TAB 1: BREADTH MATRIX & HISTORICAL MOMENTUM
+# ------------------------------------------------------------------------------
 with tab1:
     st.subheader("S&P 500 Large Cap Breadth Matrix")
     st.caption(
-        "Constituent participation, momentum extremes, and multi-timeframe moving averages."
+        "Constituent participation, 1-week breadth momentum shifts, and momentum extremes."
     )
 
     breadth = (
@@ -415,6 +449,10 @@ with tab1:
             Stocks=("Symbol", "count"),
             Above_10D=("above_10d", lambda x: round(float(x.mean() * 100), 1)),
             Above_20D=("above_20d", lambda x: round(float(x.mean() * 100), 1)),
+            Above_20D_5D=(
+                "above_20d_5d_ago",
+                lambda x: round(float(x.mean() * 100), 1),
+            ),
             Above_50D=("above_50d", lambda x: round(float(x.mean() * 100), 1)),
             Above_100D=(
                 "above_100d",
@@ -443,6 +481,11 @@ with tab1:
         .reset_index()
     )
 
+    # Calculate 1-Week Breadth Shift (% change in stocks > 20D SMA)
+    breadth["Breadth_1W_Shift"] = round(
+        breadth["Above_20D"] - breadth["Above_20D_5D"], 1
+    )
+
     breadth = breadth.sort_values(by="Above_20D", ascending=False).reset_index(
         drop=True
     )
@@ -452,6 +495,7 @@ with tab1:
         "GICS Sector": "Sector",
         "Above_10D": "> 10D SMA",
         "Above_20D": "> 20D SMA",
+        "Breadth_1W_Shift": "1W Breadth Shift",
         "Above_50D": "> 50D SMA",
         "Above_100D": "> 100D SMA",
         "Above_200D": "> 200D SMA",
@@ -462,7 +506,10 @@ with tab1:
         "RSI_Under_30": "RSI < 30",
         "RSI_Over_70": "RSI > 70",
     }
-    breadth = breadth.rename(columns=column_mapping)
+    breadth = breadth.drop(columns=["Above_20D_5D"]).rename(
+        columns=column_mapping
+    )
+
     pct_cols = [
         "> 10D SMA",
         "> 20D SMA",
@@ -491,6 +538,9 @@ with tab1:
             vmax=100.0,
         )
         .background_gradient(
+            subset=["1W Breadth Shift"], cmap="RdYlGn", vmin=-15.0, vmax=15.0
+        )
+        .background_gradient(
             subset=["4W High", "52W High", "RSI > 70"],
             cmap="BuGn",
             vmin=0.0,
@@ -502,17 +552,27 @@ with tab1:
             vmin=0.0,
             vmax=30.0,
         )
-        .format({col: "{:.1f}%" for col in pct_cols}),
+        .format(
+            {
+                col: "{:.1f}%"
+                for col in pct_cols
+                if col in breadth.columns
+            }
+        )
+        .format({"1W Breadth Shift": "{:+.1f}%"}),
         use_container_width=True,
         height=450,
         hide_index=True,
     )
 
-# --- TAB 2: RELATIVE STRENGTH & ROTATION ---
+
+# ------------------------------------------------------------------------------
+# TAB 2: RELATIVE STRENGTH & ROTATION MATRIX
+# ------------------------------------------------------------------------------
 with tab2:
     st.subheader("Sector Relative Strength vs. S&P 500 (SPY)")
     st.caption(
-        "Identifies where institutional money is actively flowing in or out over multiple time horizons."
+        "Tracks institutional capital flow over 1-Week, 1-Month, and 3-Month horizons."
     )
 
     c1, c2 = st.columns([1.2, 1])
@@ -545,7 +605,7 @@ with tab2:
         )
 
     with c2:
-        st.markdown("##### 🧭 Sector Rotation Quadrants (RRG Style)")
+        st.markdown("##### 🧭 Sector Rotation Quadrants")
         fig = px.scatter(
             sector_perf_df,
             x="Alpha 1M",
@@ -572,9 +632,12 @@ with tab2:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 3: ALPHA OUTPERFORMER RADAR ---
+
+# ------------------------------------------------------------------------------
+# TAB 3: ALPHA OUTPERFORMER RADAR
+# ------------------------------------------------------------------------------
 with tab3:
-    st.subheader("🎯 Alpha Radar: Top Stocks Outperforming the S&P 500")
+    st.subheader("🎯 Alpha Radar: Top Stocks Outperforming S&P 500")
     st.caption(
         "Screen high-momentum institutional leaders trading in uptrends with active volume expansion."
     )
@@ -612,10 +675,7 @@ with tab3:
     def classify_setup(row):
         if row["new_4w_high"] and row["rvol"] >= 1.3:
             return "🔥 Volume Breakout"
-        elif (
-            abs(row["last_price"] - row["sma20"]) / row["sma20"] < 0.02
-            and row["rsi"] < 60
-        ):
+        elif abs(row["dist_20d"]) < 2.5 and row["rsi"] < 60:
             return "🎯 20D SMA Pullback"
         elif row["trend_score"] == 5 and row["alpha_3m"] > 10:
             return "💎 Stage 2 Leader"
@@ -693,90 +753,311 @@ with tab3:
             "No stocks match the selected filter criteria. Try lowering the alpha or RVOL threshold."
         )
 
-# --- TAB 4: DEEP DIVE ---
+
+# ------------------------------------------------------------------------------
+# TAB 4: OPTIONS STRATEGY RADAR (NEW POWER SUITE)
+# ------------------------------------------------------------------------------
 with tab4:
-    st.subheader("🔍 Deep Dive Technical Checklist")
-    selected_ticker = st.selectbox(
-        "Select Ticker to Inspect:",
-        sorted(merged_df["Symbol"].unique()),
-        index=0,
+    st.subheader("💡 Options Strategy Scanner & Setup Generator")
+    st.caption(
+        "Pinpoints optimal underlying stocks matched to specific options income and growth strategies."
     )
 
-    stock_row = merged_df[merged_df["Symbol"] == selected_ticker].iloc[0]
-    stock_series = extract_price_series(raw_data, selected_ticker)
+    opt_tab1, opt_tab2, opt_tab3 = st.tabs(
+        [
+            "💎 LEAPS / Poor Man's Covered Call (PMCC)",
+            "🛡️ Cash-Secured Put / Wheel Candidates",
+            "📈 Covered Call Premium Harvest",
+        ]
+    )
 
-    if stock_series:
-        c_series = stock_series["close"]
+    # SUB-TAB A: LEAPS / PMCC
+    with opt_tab1:
+        st.markdown(
+            "**Strategy Goal:** Buy deep In-The-Money long-dated call options (Delta ~0.80) on strong Stage 2 leaders with modest Historical Volatility (HV) to minimize extrinsic cost."
+        )
 
-        d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric("Current Price", f"${stock_row['last_price']:.2f}")
-        d2.metric("1M Alpha vs SPY", f"{stock_row['alpha_1m']:+.2f}%")
-        d3.metric("3M Alpha vs SPY", f"{stock_row['alpha_3m']:+.2f}%")
-        d4.metric("RVOL (20D)", f"{stock_row['rvol']:.2f}x")
-        d5.metric("RSI(14)", f"{stock_row['rsi']:.1f}")
+        leaps_cands = merged_df[
+            (merged_df["trend_score"] >= 4)
+            & (merged_df["above_200d"])
+            & (merged_df["alpha_3m"] > 5)
+            & (merged_df["rsi"].between(45, 68))
+            & (merged_df["hv30"] < 40)
+        ].copy()
 
-        chart_fig = go.Figure()
-        chart_fig.add_trace(
-            go.Scatter(
-                x=c_series.index[-120:],
-                y=c_series.iloc[-120:],
-                name="Close Price",
-                line=dict(color="#2962FF", width=2),
+        if not leaps_cands.empty:
+            leaps_cands = leaps_cands.sort_values(
+                by="alpha_3m", ascending=False
             )
-        )
-        chart_fig.add_trace(
-            go.Scatter(
-                x=c_series.index[-120:],
-                y=c_series.rolling(20).mean().iloc[-120:],
-                name="20D SMA",
-                line=dict(color="#FF6D00", width=1.5),
+            disp_leaps = leaps_cands[
+                [
+                    "Symbol",
+                    "Security",
+                    "GICS Sector",
+                    "last_price",
+                    "alpha_3m",
+                    "hv30",
+                    "rsi",
+                    "dist_50d",
+                ]
+            ]
+            disp_leaps.columns = [
+                "Ticker",
+                "Company",
+                "Sector",
+                "Price ($)",
+                "3M Alpha",
+                "30D HV (%)",
+                "RSI",
+                "Dist > 50D (%)",
+            ]
+            st.dataframe(
+                disp_leaps.style.background_gradient(
+                    subset=["3M Alpha"], cmap="Greens", vmin=5, vmax=30
+                )
+                .background_gradient(
+                    subset=["30D HV (%)"], cmap="Blues_r", vmin=15, vmax=40
+                )
+                .format(
+                    {
+                        "Price ($)": "${:.2f}",
+                        "3M Alpha": "{:+.2f}%",
+                        "30D HV (%)": "{:.1f}%",
+                        "RSI": "{:.1f}",
+                        "Dist > 50D (%)": "{:+.1f}%",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
-        )
-        chart_fig.add_trace(
-            go.Scatter(
-                x=c_series.index[-120:],
-                y=c_series.rolling(50).mean().iloc[-120:],
-                name="50D SMA",
-                line=dict(color="#00C853", width=1.5),
-            )
-        )
-        chart_fig.add_trace(
-            go.Scatter(
-                x=c_series.index[-120:],
-                y=c_series.rolling(200).mean().iloc[-120:],
-                name="200D SMA",
-                line=dict(color="#D50000", width=1.5),
-            )
+        else:
+            st.info("No candidates currently match the strict LEAPS criteria.")
+
+    # SUB-TAB B: CASH-SECURED PUTS / WHEEL
+    with opt_tab2:
+        st.markdown(
+            "**Strategy Goal:** Sell Out-of-the-Money Cash-Secured Puts (Delta ~0.20–0.30) on high-quality uptrending stocks pulling back near 20D/50D SMA support with elevated volatility premium."
         )
 
-        chart_fig.update_layout(
-            title=f"{selected_ticker} ({stock_row['Security']}) - Price vs Key Moving Averages (Past 6 Months)",
-            xaxis_title="Date",
-            yaxis_title="Price ($)",
-            height=420,
-            margin=dict(l=20, r=20, t=40, b=20),
-            hovermode="x unified",
-        )
-        st.plotly_chart(chart_fig, use_container_width=True)
+        csp_cands = merged_df[
+            (merged_df["above_200d"])
+            & (merged_df["dist_50d"].between(-2.0, 5.0))
+            & (merged_df["rsi"].between(35, 55))
+            & (merged_df["hv30"] > 22)
+        ].copy()
 
-        st.markdown("##### 📋 Technical Health Checklist")
-        chk1 = "✅" if stock_row["above_20d"] else "❌"
-        chk2 = "✅" if stock_row["above_50d"] else "❌"
-        chk3 = "✅" if stock_row["above_200d"] else "❌"
-        chk4 = "✅" if stock_row["alpha_1m"] > 0 else "❌"
-        chk5 = "✅" if 40 <= stock_row["rsi"] <= 70 else "⚠️"
+        if not csp_cands.empty:
+            csp_cands = csp_cands.sort_values(by="hv30", ascending=False)
+            disp_csp = csp_cands[
+                [
+                    "Symbol",
+                    "Security",
+                    "GICS Sector",
+                    "last_price",
+                    "sma50",
+                    "dist_50d",
+                    "hv30",
+                    "rsi",
+                    "ret_5d",
+                ]
+            ]
+            disp_csp.columns = [
+                "Ticker",
+                "Company",
+                "Sector",
+                "Price ($)",
+                "50D SMA ($)",
+                "Dist to 50D (%)",
+                "30D HV (%)",
+                "RSI",
+                "5D %",
+            ]
+            st.dataframe(
+                disp_csp.style.background_gradient(
+                    subset=["30D HV (%)"], cmap="Oranges", vmin=20, vmax=50
+                )
+                .background_gradient(
+                    subset=["RSI"], cmap="Blues_r", vmin=35, vmax=55
+                )
+                .format(
+                    {
+                        "Price ($)": "${:.2f}",
+                        "50D SMA ($)": "${:.2f}",
+                        "Dist to 50D (%)": "{:+.1f}%",
+                        "30D HV (%)": "{:.1f}%",
+                        "RSI": "{:.1f}",
+                        "5D %": "{:+.2f}%",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "No candidates currently match the Cash-Secured Put pullback filter."
+            )
 
-        ch_col1, ch_col2 = st.columns(2)
-        ch_col1.markdown(f"- {chk1} **Above 20D SMA:** Short-term trend support")
-        ch_col1.markdown(
-            f"- {chk2} **Above 50D SMA:** Intermediate institutional trend"
+    # SUB-TAB C: COVERED CALL HARVEST
+    with opt_tab3:
+        st.markdown(
+            "**Strategy Goal:** Sell Out-of-the-Money Covered Calls against long stock positions on stocks that have achieved extended momentum (RSI $> 70$ or 52W highs)."
         )
-        ch_col1.markdown(
-            f"- {chk3} **Above 200D SMA:** Long-term bull market filter"
+
+        cc_cands = merged_df[
+            (merged_df["above_20d"])
+            & ((merged_df["rsi"] >= 70) | (merged_df["new_52w_high"]))
+        ].copy()
+
+        if not cc_cands.empty:
+            cc_cands = cc_cands.sort_values(by="rsi", ascending=False)
+            disp_cc = cc_cands[
+                [
+                    "Symbol",
+                    "Security",
+                    "GICS Sector",
+                    "last_price",
+                    "ret_5d",
+                    "ret_1m",
+                    "rsi",
+                    "new_52w_high",
+                    "hv30",
+                ]
+            ]
+            disp_cc.columns = [
+                "Ticker",
+                "Company",
+                "Sector",
+                "Price ($)",
+                "5D %",
+                "1M %",
+                "RSI",
+                "52W High?",
+                "30D HV (%)",
+            ]
+            st.dataframe(
+                disp_cc.style.background_gradient(
+                    subset=["RSI"], cmap="Reds", vmin=70, vmax=90
+                ).format(
+                    {
+                        "Price ($)": "${:.2f}",
+                        "5D %": "{:+.2f}%",
+                        "1M %": "{:+.2f}%",
+                        "RSI": "{:.1f}",
+                        "30D HV (%)": "{:.1f}%",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No stocks currently meet the overbought covered call criteria.")
+
+
+# ------------------------------------------------------------------------------
+# TAB 5: SINGLE STOCK TECHNICAL DEEP DIVE & EXECUTIVE BRIEF
+# ------------------------------------------------------------------------------
+with tab5:
+    st.subheader("🔍 Deep Dive Technical Checklist & Daily Briefing")
+
+    col_deep, col_brief = st.columns([1.2, 1])
+
+    with col_deep:
+        selected_ticker = st.selectbox(
+            "Select Ticker to Inspect:",
+            sorted(merged_df["Symbol"].unique()),
+            index=0,
         )
-        ch_col2.markdown(
-            f"- {chk4} **1-Month Alpha Positive:** Generating excess return vs SPY"
+
+        stock_row = merged_df[merged_df["Symbol"] == selected_ticker].iloc[0]
+        stock_series = extract_price_series(raw_data, selected_ticker)
+
+        if stock_series:
+            c_series = stock_series["close"]
+
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Current Price", f"${stock_row['last_price']:.2f}")
+            d2.metric("1M Alpha vs SPY", f"{stock_row['alpha_1m']:+.2f}%")
+            d3.metric("30D HV", f"{stock_row['hv30']:.1f}%")
+            d4.metric("RSI(14)", f"{stock_row['rsi']:.1f}")
+
+            chart_fig = go.Figure()
+            chart_fig.add_trace(
+                go.Scatter(
+                    x=c_series.index[-120:],
+                    y=c_series.iloc[-120:],
+                    name="Close Price",
+                    line=dict(color="#2962FF", width=2),
+                )
+            )
+            chart_fig.add_trace(
+                go.Scatter(
+                    x=c_series.index[-120:],
+                    y=c_series.rolling(20).mean().iloc[-120:],
+                    name="20D SMA",
+                    line=dict(color="#FF6D00", width=1.5),
+                )
+            )
+            chart_fig.add_trace(
+                go.Scatter(
+                    x=c_series.index[-120:],
+                    y=c_series.rolling(50).mean().iloc[-120:],
+                    name="50D SMA",
+                    line=dict(color="#00C853", width=1.5),
+                )
+            )
+            chart_fig.add_trace(
+                go.Scatter(
+                    x=c_series.index[-120:],
+                    y=c_series.rolling(200).mean().iloc[-120:],
+                    name="200D SMA",
+                    line=dict(color="#D50000", width=1.5),
+                )
+            )
+
+            chart_fig.update_layout(
+                title=f"{selected_ticker} ({stock_row['Security']}) - Price vs SMAs (6M)",
+                xaxis_title="Date",
+                yaxis_title="Price ($)",
+                height=380,
+                margin=dict(l=20, r=20, t=40, b=20),
+                hovermode="x unified",
+            )
+            st.plotly_chart(chart_fig, use_container_width=True)
+
+            chk1 = "✅" if stock_row["above_20d"] else "❌"
+            chk2 = "✅" if stock_row["above_50d"] else "❌"
+            chk3 = "✅" if stock_row["above_200d"] else "❌"
+            chk4 = "✅" if stock_row["alpha_1m"] > 0 else "❌"
+            chk5 = "✅" if 40 <= stock_row["rsi"] <= 70 else "⚠️"
+
+            st.markdown(
+                f"- {chk1} **> 20D SMA:** Short-term trend | {chk2} **> 50D SMA:** Intermediate institutional trend"
+            )
+            st.markdown(
+                f"- {chk3} **> 200D SMA:** Bull regime | {chk4} **Alpha 1M:** Outperforming SPY | {chk5} **RSI:** {stock_row['rsi']:.1f}"
+            )
+
+    with col_brief:
+        st.markdown("##### 📋 Daily Portfolio Executive Briefing")
+        st.caption(
+            "Copy & paste this snapshot directly into your portfolio journal, Discord, or notes."
         )
-        ch_col2.markdown(
-            f"- {chk5} **RSI In Health Zone (40-70):** Not severely overbought or broken down"
+
+        leading_sectors = sector_perf_df[
+            sector_perf_df["Rotation Phase"] == "🟢 Leading"
+        ]["Sector"].tolist()
+        top_3_alpha = (
+            merged_df.sort_values(by="alpha_1m", ascending=False)
+            .head(3)["Symbol"]
+            .tolist()
         )
+
+        markdown_brief = f"""### 📊 Daily Market & Sector Briefing
+* **S&P 500 (SPY):** ${spy_last:.2f} ({spy_chg_1d:+.2f}%)
+* **Market Regime:** {regime}
+* **S&P 500 > 50D SMA:** {pct_stocks_above_50d:.1f}% | **> 200D SMA:** {pct_stocks_above_200d:.1f}%
+* **Leading GICS Sectors:** {', '.join(leading_sectors) if leading_sectors else 'None (Choppy)'}
+* **Top Alpha Stocks (1M vs SPY):** {', '.join(top_3_alpha)}
+* **Tactical Portfolio Bias:** {advice}
+"""
+        st.text_area("Daily Summary Text:", markdown_brief, height=260)
